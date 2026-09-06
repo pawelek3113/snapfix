@@ -161,7 +161,7 @@ class MemoriesFixer:
             self.logger.info("Set filesystem dates on %s: %s", path, formatted)
 
 
-    def run(self):
+    def fix_dates(self):
         et = self._ensure_started()
 
         for pair in self.find_pairs():

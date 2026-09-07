@@ -6,7 +6,8 @@ from datetime import datetime, time, date
 from dataclasses import dataclass
 from pathlib import Path
 import re
-
+import ffmpeg
+from PIL import Image
 
 FILENAME_PATTERN = re.compile(
     r"^(?P<date>\d{4}-\d{2}-\d{2})_(?P<uuid>[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12})-(?P<kind>main|overlay)\.\w+$",
@@ -178,3 +179,100 @@ class MemoriesFixer:
                 continue
 
             self._apply_dates(pair, target_datetime)
+
+    def _compose_pair(self, pair: MemoryPair, output_dir: Path) -> None:
+        assert pair.main_path is not None and pair.overlay_path is not None
+        et = self._ensure_started()
+
+        metadata = et.get_metadata(files=str(pair.main_path))[0]
+        target_datetime = self._determine_target_datetime(pair, metadata)
+        if target_datetime is None:
+            if self.logger:
+                self.logger.warning("Could not determine date for composite, skipping UUID %s", pair.uuid)
+            return
+
+        output_path = output_dir / f"{pair.main_path.stem}_composed.jpg"
+
+        if self.dry_run:
+            if self.logger:
+                self.logger.info("[DRY RUN] Would create composite %s", output_path)
+            return
+
+        base = Image.open(pair.main_path).convert("RGBA")
+        overlay = Image.open(pair.overlay_path).convert("RGBA")
+
+        if overlay.size != base.size:
+            overlay = overlay.resize(base.size)
+
+        composed = Image.alpha_composite(base, overlay).convert("RGB")
+        composed.save(output_path, "JPEG")
+
+        self._write_main_tags(output_path, target_datetime.strftime("%Y:%m:%d %H:%M:%S"))
+
+    def _compose_video_pair(self, pair: MemoryPair, output_dir: Path) -> None:
+        assert pair.main_path is not None and pair.overlay_path is not None
+
+        et = self._ensure_started()
+        metadata = et.get_metadata(files=str(pair.main_path))[0]
+        target_datetime = self._determine_target_datetime(pair, metadata)
+        if target_datetime is None:
+            if self.logger:
+                self.logger.warning("Could not determine date for video composite, skipping UUID %s", pair.uuid)
+            return
+
+        output_path = output_dir / f"{pair.main_path.stem}_composed.mp4"
+
+        if self.dry_run:
+            if self.logger:
+                self.logger.info("[DRY RUN] Would create video composite %s", output_path)
+            return
+
+        video_input = ffmpeg.input(str(pair.main_path))
+        overlay_input = ffmpeg.input(str(pair.overlay_path))
+
+        composed_video = ffmpeg.filter(
+            [video_input.video, overlay_input.video],
+            "overlay",
+        )
+
+        (
+            ffmpeg
+            .output(
+                composed_video,
+                video_input.audio,
+                str(output_path),
+                vcodec="libx264",
+                crf=15,
+                acodec="copy",
+            )
+            .overwrite_output()
+            .run(quiet=True)
+        )
+
+        formatted = target_datetime.strftime("%Y:%m:%d %H:%M:%S")
+        et.set_tags(files=str(output_path), tags={
+            "QuickTime:CreateDate": formatted,
+            "QuickTime:ModifyDate": formatted,
+            "File:FileCreateDate": formatted,
+            "File:FileModifyDate": formatted,
+        })
+        if self.logger:
+            self.logger.info("Created video composite %s with date %s", output_path, formatted)
+
+    def compose_all(self, output_dir: Path) -> None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        for pair in self.find_pairs():
+            if pair.main_path is None or pair.overlay_path is None:
+                if self.logger:
+                    self.logger.debug("Skipping compose (no overlay) for UUID %s", pair.uuid)
+                continue
+
+            suffix = pair.main_path.suffix.lower()
+            if suffix == ".jpg":
+                self._compose_pair(pair, output_dir)
+            elif suffix == ".mp4":
+                self._compose_video_pair(pair, output_dir)
+            else:
+                if self.logger:
+                    self.logger.warning("Unrecognized main file type for compose: %s", pair.main_path)

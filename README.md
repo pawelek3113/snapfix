@@ -8,6 +8,7 @@ ___
 
 - exiftool
 - poetry
+- ffmpeg
 
 ## Installation
 

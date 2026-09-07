@@ -25,10 +25,10 @@ def main():
         with MemoriesFixer(root_dir=args.root_dir, dry_run=args.dry_run, logger=lg) as fixer:
             fixer.fix_dates()
     elif args.command == "compose":
-            with MemoriesFixer(root_dir=args.root_dir, dry_run=args.dry_run, logger=lg) as fixer:
-                # fixer.compose_all(args.output_dir)
-                lg.warning("compose command is not implemented yet")
-                ...
+        with MemoriesFixer(root_dir=args.root_dir, dry_run=args.dry_run, logger=lg) as fixer:
+            # fixer.compose_all(args.output_dir)
+            lg.warning("compose command is not implemented yet")
+            ...
 
 
 if __name__ == "__main__":

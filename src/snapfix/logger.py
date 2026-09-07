@@ -1,6 +1,7 @@
 import logging
 from pathlib import Path
 
+
 class LoggerBuilder:
     @staticmethod
     def build(log_file: Path) -> logging.Logger:

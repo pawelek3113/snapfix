@@ -20,21 +20,32 @@ QUICKTIME_DATE_FORMAT = "%Y:%m:%d %H:%M:%S"
 @dataclass
 class MemoryPair:
     uuid: str
-    date: date 
+    date: date
     main_path: Path | None = None
     overlay_path: Path | None = None
 
+
 class MemoriesFixer:
-    def __init__(self, root_dir: str | Path, dry_run: bool = False, logger: Logger | None = None):
+    def __init__(
+        self,
+        root_dir: str | Path,
+        dry_run: bool = False,
+        logger: Logger | None = None,
+        keep_backups: bool = False,
+    ):
         self.root_dir = Path(root_dir)
         if not self.root_dir.is_dir():
-            raise NotADirectoryError(f"root_dir does not exist or is not a directory: {self.root_dir}")
+            raise NotADirectoryError(
+                f"root_dir does not exist or is not a directory: {self.root_dir}"
+            )
         self._et: ExifToolHelper | None = None
         self.dry_run = dry_run
         self.logger = logger
+        self.keep_backups = keep_backups
 
     def __enter__(self):
-        self._et = ExifToolHelper()
+        common_args = [] if self.keep_backups else ["-overwrite_original"]
+        self._et = ExifToolHelper(common_args=common_args)
         self._et.__enter__()
         return self
 
@@ -45,9 +56,11 @@ class MemoriesFixer:
 
     def _ensure_started(self) -> ExifToolHelper:
         if self._et is None:
-            raise RuntimeError("MemoriesFixer must be used as a context manager (use 'with')")
+            raise RuntimeError(
+                "MemoriesFixer must be used as a context manager (use 'with')"
+            )
         return self._et
-    
+
     def find_pairs(self) -> list[MemoryPair]:
         pairs: dict[str, MemoryPair] = {}
 
@@ -58,12 +71,16 @@ class MemoriesFixer:
 
         return list(pairs.values())
 
-    def _collect_into(self, pairs: dict[str, MemoryPair], pattern: str, kind: str) -> None:
+    def _collect_into(
+        self, pairs: dict[str, MemoryPair], pattern: str, kind: str
+    ) -> None:
         for path in self.root_dir.rglob(pattern):
             match = FILENAME_PATTERN.match(path.name)
             if not match:
-                if self.logger: 
-                    self.logger.warning("Filename does not match expected pattern, skipping: %s", path)
+                if self.logger:
+                    self.logger.warning(
+                        "Filename does not match expected pattern, skipping: %s", path
+                    )
                 continue
 
             uuid = match.group("uuid").upper()
@@ -72,10 +89,13 @@ class MemoriesFixer:
 
             existing = getattr(pair, f"{kind}_path")
             if existing is not None and existing != path:
-                if self.logger: 
+                if self.logger:
                     self.logger.warning(
                         "Duplicate %s file for UUID %s: keeping %s, ignoring %s",
-                        kind, uuid, existing, path,
+                        kind,
+                        uuid,
+                        existing,
+                        path,
                     )
                 continue
 
@@ -85,20 +105,25 @@ class MemoriesFixer:
         for pair in pairs.values():
             if pair.main_path is None:
                 if self.logger:
-                    self.logger.warning("Overlay without matching main file: %s", pair.overlay_path)
+                    self.logger.warning(
+                        "Overlay without matching main file: %s", pair.overlay_path
+                    )
             elif pair.overlay_path is None:
                 if self.logger:
-                    self.logger.debug("Main file without overlay (expected for some memories): %s", pair.main_path)
+                    self.logger.debug(
+                        "Main file without overlay (expected for some memories): %s",
+                        pair.main_path,
+                    )
 
-
-    def _determine_target_datetime(self, pair: MemoryPair, metadata: dict) -> datetime | None:
+    def _determine_target_datetime(
+        self, pair: MemoryPair, metadata: dict
+    ) -> datetime | None:
         file_type = metadata.get("File:FileType")
 
         if file_type == "MP4":
             return self._datetime_from_quicktime(metadata)
 
         return self._datetime_from_filename(pair)
-
 
     def _datetime_from_quicktime(self, metadata: dict) -> datetime | None:
         raw_value = metadata.get("QuickTime:CreateDate")
@@ -112,7 +137,6 @@ class MemoriesFixer:
     def _datetime_from_filename(self, pair: MemoryPair) -> datetime | None:
         return datetime.combine(pair.date, time(hour=12))
 
-
     def _apply_dates(self, pair: MemoryPair, target_datetime: datetime) -> None:
         et = self._ensure_started()
         formatted = target_datetime.strftime("%Y:%m:%d %H:%M:%S")
@@ -122,7 +146,6 @@ class MemoriesFixer:
 
         if pair.overlay_path is not None:
             self._write_filesystem_tags(pair.overlay_path, formatted)
-
 
     def _write_main_tags(self, main_path: Path, formatted: str) -> None:
         et = self._ensure_started()
@@ -136,14 +159,15 @@ class MemoriesFixer:
             }
             if self.dry_run:
                 if self.logger:
-                    self.logger.info("[DRY RUN] Would set EXIF tags %s on %s", tags, main_path)
+                    self.logger.info(
+                        "[DRY RUN] Would set EXIF tags %s on %s", tags, main_path
+                    )
             else:
                 et.set_tags(files=str(main_path), tags=tags)
                 if self.logger:
                     self.logger.info("Set EXIF tags on %s: %s", main_path, formatted)
 
         self._write_filesystem_tags(main_path, formatted)
-
 
     def _write_filesystem_tags(self, path: Path, formatted: str) -> None:
         et = self._ensure_started()
@@ -154,13 +178,14 @@ class MemoriesFixer:
 
         if self.dry_run:
             if self.logger:
-                self.logger.info("[DRY RUN] Would set filesystem dates %s on %s", formatted, path)
+                self.logger.info(
+                    "[DRY RUN] Would set filesystem dates %s on %s", formatted, path
+                )
             return
 
         et.set_tags(files=str(path), tags=tags)
         if self.logger:
             self.logger.info("Set filesystem dates on %s: %s", path, formatted)
-
 
     def fix_dates(self):
         et = self._ensure_started()
@@ -175,7 +200,10 @@ class MemoriesFixer:
             target_datetime = self._determine_target_datetime(pair, metadata)
             if target_datetime is None:
                 if self.logger:
-                    self.logger.warning("Could not determine target date for UUID %s, skipping", pair.uuid)
+                    self.logger.warning(
+                        "Could not determine target date for UUID %s, skipping",
+                        pair.uuid,
+                    )
                 continue
 
             self._apply_dates(pair, target_datetime)
@@ -188,7 +216,10 @@ class MemoriesFixer:
         target_datetime = self._determine_target_datetime(pair, metadata)
         if target_datetime is None:
             if self.logger:
-                self.logger.warning("Could not determine date for composite, skipping UUID %s", pair.uuid)
+                self.logger.warning(
+                    "Could not determine date for composite, skipping UUID %s",
+                    pair.uuid,
+                )
             return
 
         output_path = output_dir / f"{pair.main_path.stem}_composed.jpg"
@@ -207,7 +238,9 @@ class MemoriesFixer:
         composed = Image.alpha_composite(base, overlay).convert("RGB")
         composed.save(output_path, "JPEG")
 
-        self._write_main_tags(output_path, target_datetime.strftime("%Y:%m:%d %H:%M:%S"))
+        self._write_main_tags(
+            output_path, target_datetime.strftime("%Y:%m:%d %H:%M:%S")
+        )
 
     def _compose_video_pair(self, pair: MemoryPair, output_dir: Path) -> None:
         assert pair.main_path is not None and pair.overlay_path is not None
@@ -217,14 +250,19 @@ class MemoriesFixer:
         target_datetime = self._determine_target_datetime(pair, metadata)
         if target_datetime is None:
             if self.logger:
-                self.logger.warning("Could not determine date for video composite, skipping UUID %s", pair.uuid)
+                self.logger.warning(
+                    "Could not determine date for video composite, skipping UUID %s",
+                    pair.uuid,
+                )
             return
 
         output_path = output_dir / f"{pair.main_path.stem}_composed.mp4"
 
         if self.dry_run:
             if self.logger:
-                self.logger.info("[DRY RUN] Would create video composite %s", output_path)
+                self.logger.info(
+                    "[DRY RUN] Would create video composite %s", output_path
+                )
             return
 
         video_input = ffmpeg.input(str(pair.main_path))
@@ -236,8 +274,7 @@ class MemoriesFixer:
         )
 
         (
-            ffmpeg
-            .output(
+            ffmpeg.output(
                 composed_video,
                 video_input.audio,
                 str(output_path),
@@ -250,14 +287,19 @@ class MemoriesFixer:
         )
 
         formatted = target_datetime.strftime("%Y:%m:%d %H:%M:%S")
-        et.set_tags(files=str(output_path), tags={
-            "QuickTime:CreateDate": formatted,
-            "QuickTime:ModifyDate": formatted,
-            "File:FileCreateDate": formatted,
-            "File:FileModifyDate": formatted,
-        })
+        et.set_tags(
+            files=str(output_path),
+            tags={
+                "QuickTime:CreateDate": formatted,
+                "QuickTime:ModifyDate": formatted,
+                "File:FileCreateDate": formatted,
+                "File:FileModifyDate": formatted,
+            },
+        )
         if self.logger:
-            self.logger.info("Created video composite %s with date %s", output_path, formatted)
+            self.logger.info(
+                "Created video composite %s with date %s", output_path, formatted
+            )
 
     def compose_all(self, output_dir: Path) -> None:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -265,7 +307,9 @@ class MemoriesFixer:
         for pair in self.find_pairs():
             if pair.main_path is None or pair.overlay_path is None:
                 if self.logger:
-                    self.logger.debug("Skipping compose (no overlay) for UUID %s", pair.uuid)
+                    self.logger.debug(
+                        "Skipping compose (no overlay) for UUID %s", pair.uuid
+                    )
                 continue
 
             suffix = pair.main_path.suffix.lower()
@@ -275,4 +319,6 @@ class MemoriesFixer:
                 self._compose_video_pair(pair, output_dir)
             else:
                 if self.logger:
-                    self.logger.warning("Unrecognized main file type for compose: %s", pair.main_path)
+                    self.logger.warning(
+                        "Unrecognized main file type for compose: %s", pair.main_path
+                    )

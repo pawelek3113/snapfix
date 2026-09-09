@@ -1,12 +1,11 @@
-from exiftool import ExifToolHelper
-from pathlib import Path
-from logging import Logger
-from datetime import datetime, time, date
-
-from dataclasses import dataclass
-from pathlib import Path
 import re
+from dataclasses import dataclass
+from datetime import date, datetime, time
+from logging import Logger
+from pathlib import Path
+
 import ffmpeg
+from exiftool import ExifToolHelper
 from PIL import Image
 
 FILENAME_PATTERN = re.compile(
@@ -187,12 +186,21 @@ class MemoriesFixer:
         if self.logger:
             self.logger.info("Set filesystem dates on %s: %s", path, formatted)
 
+    def _print_summary(self, fixed: int, skipped: int, label: str = "Fixed") -> None:
+        if self.logger is None:
+            return
+        self.logger.info("")
+        self.logger.info("Done! %s %d files, skipped %d.", label, fixed, skipped)
+
     def fix_dates(self):
         et = self._ensure_started()
+        fixed = 0
+        skipped = 0
 
         for pair in self.find_pairs():
             source_path = pair.main_path or pair.overlay_path
             if source_path is None:
+                skipped += 1
                 continue  # shouldn't happen in practice
 
             metadata = et.get_metadata(files=str(source_path))[0]
@@ -204,9 +212,13 @@ class MemoriesFixer:
                         "Could not determine target date for UUID %s, skipping",
                         pair.uuid,
                     )
+                skipped += 1
                 continue
 
             self._apply_dates(pair, target_datetime)
+            fixed += 1
+
+        self._print_summary(fixed=fixed, skipped=skipped)
 
     def _compose_pair(self, pair: MemoryPair, output_dir: Path) -> None:
         assert pair.main_path is not None and pair.overlay_path is not None
@@ -304,21 +316,30 @@ class MemoriesFixer:
     def compose_all(self, output_dir: Path) -> None:
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        composed = 0
+        skipped = 0
+
         for pair in self.find_pairs():
             if pair.main_path is None or pair.overlay_path is None:
                 if self.logger:
                     self.logger.debug(
                         "Skipping compose (no overlay) for UUID %s", pair.uuid
                     )
+                skipped += 1
                 continue
 
             suffix = pair.main_path.suffix.lower()
             if suffix == ".jpg":
                 self._compose_pair(pair, output_dir)
+                composed += 1
             elif suffix == ".mp4":
                 self._compose_video_pair(pair, output_dir)
+                composed += 1
             else:
                 if self.logger:
                     self.logger.warning(
                         "Unrecognized main file type for compose: %s", pair.main_path
                     )
+                    skipped += 1
+
+        self._print_summary(fixed=composed, skipped=skipped, label="Composed")

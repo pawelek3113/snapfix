@@ -40,6 +40,7 @@ def main():
         "output_dir", type=Path, help="Directory that will hold composited items."
     )
     compose_parser.add_argument(
+        "-d",
         "--dry-run",
         action="store_true",
         help="Runs the program without affecting your files.",

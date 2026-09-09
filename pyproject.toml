@@ -10,7 +10,8 @@ requires-python = ">=3.12"
 dependencies = [
     "pyexiftool (>=0.5.6,<0.6.0)",
     "ffmpeg-python (>=0.2.0,<0.3.0)",
-    "pillow (>=12.3.0,<13.0.0)"
+    "pillow (>=12.3.0,<13.0.0)",
+    "rich (>=15.0.0,<16.0.0)"
 ]
 
 [tool.poetry]

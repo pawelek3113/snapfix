@@ -277,26 +277,64 @@ class MemoriesFixer:
                 )
             return
 
+        overlay_metadata = et.get_metadata(files=str(pair.overlay_path))[0]
+
+        raw_width = metadata.get("ImageWidth") or metadata.get("Composite:ImageWidth")
+        raw_height = metadata.get("ImageHeight") or metadata.get("Composite:ImageHeight")
+        overlay_width = overlay_metadata.get("ImageWidth")
+        overlay_height = overlay_metadata.get("ImageHeight")
+
+        video_is_portrait_raw = raw_height > raw_width
+        overlay_is_portrait = overlay_height > overlay_width
+        was_rotated_by_autorotate = video_is_portrait_raw != overlay_is_portrait
+
+        if was_rotated_by_autorotate:
+            target_width, target_height = raw_height, raw_width
+        else:
+            target_width, target_height = raw_width, raw_height
+
+        if self.logger:
+            self.logger.debug(
+                "raw=%sx%s overlay=%sx%s target=%sx%s",
+                raw_width, raw_height, overlay_width, overlay_height,
+                target_width, target_height,
+            )
+
         video_input = ffmpeg.input(str(pair.main_path))
         overlay_input = ffmpeg.input(str(pair.overlay_path))
 
-        composed_video = ffmpeg.filter(
-            [video_input.video, overlay_input.video],
-            "overlay",
-        )
+        video_stream = video_input.video
 
-        (
-            ffmpeg.output(
-                composed_video,
-                video_input.audio,
-                str(output_path),
-                vcodec="libx264",
-                crf=15,
-                acodec="copy",
-            )
-            .overwrite_output()
-            .run(quiet=True)
+        overlay_stream = ffmpeg.filter(
+            overlay_input.video, "scale", target_width, target_height
         )
+        overlay_stream = ffmpeg.filter(overlay_stream, "format", "rgba")
+
+        composed_video = ffmpeg.filter([video_stream, overlay_stream], "overlay")
+
+        output_args = {
+            "vcodec": "libx264",
+            "crf": 15,
+            "acodec": "copy",
+        }
+
+        try:
+            (
+                ffmpeg.output(
+                    composed_video,
+                    video_input.audio,
+                    str(output_path),
+                    **output_args,
+                )
+                .overwrite_output()
+                .run(capture_stdout=True, capture_stderr=True)
+            )
+        except ffmpeg.Error as e:
+            if self.logger:
+                self.logger.error(
+                    "ffmpeg failed for %s: %s", pair.uuid, e.stderr.decode()
+                )
+            return
 
         formatted = target_datetime.strftime("%Y:%m:%d %H:%M:%S")
         et.set_tags(

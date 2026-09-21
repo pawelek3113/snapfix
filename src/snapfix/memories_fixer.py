@@ -62,7 +62,7 @@ class MemoriesFixer:
         return self._et
 
     def find_pairs(self) -> list[MemoryPair]:
-        pairs: dict[str, MemoryPair] = {}
+        pairs: dict[tuple[date, str], MemoryPair] = {}
 
         self._collect_into(pairs, pattern="*-main.*", kind="main")
         self._collect_into(pairs, pattern="*-overlay.*", kind="overlay")
@@ -72,7 +72,7 @@ class MemoriesFixer:
         return list(pairs.values())
 
     def _collect_into(
-        self, pairs: dict[str, MemoryPair], pattern: str, kind: str
+        self, pairs: dict[tuple[date, str], MemoryPair], pattern: str, kind: str
     ) -> None:
         for path in self.root_dir.rglob(pattern):
             match = FILENAME_PATTERN.match(path.name)
@@ -84,16 +84,18 @@ class MemoriesFixer:
                 continue
 
             uuid = match.group("uuid").upper()
-            date = datetime.strptime(match.group("date"), "%Y-%m-%d").date()
-            pair = pairs.setdefault(uuid, MemoryPair(date=date, uuid=uuid))
+            file_date = datetime.strptime(match.group("date"), "%Y-%m-%d").date()
+            key = (file_date, uuid)
+            pair = pairs.setdefault(key, MemoryPair(date=file_date, uuid=uuid))
 
             existing = getattr(pair, f"{kind}_path")
             if existing is not None and existing != path:
                 if self.logger:
                     self.logger.warning(
-                        "Duplicate %s file for UUID %s: keeping %s, ignoring %s",
+                        "Duplicate %s file for UUID %s on %s: keeping %s, ignoring %s",
                         kind,
                         uuid,
+                        file_date,
                         existing,
                         path,
                     )
@@ -101,7 +103,7 @@ class MemoriesFixer:
 
             setattr(pair, f"{kind}_path", path)
 
-    def _log_unpaired(self, pairs: dict[str, MemoryPair]) -> None:
+    def _log_unpaired(self, pairs: dict[tuple[date, str], MemoryPair]) -> None:
         for pair in pairs.values():
             if pair.main_path is None:
                 if self.logger:
@@ -110,8 +112,8 @@ class MemoriesFixer:
                     )
             elif pair.overlay_path is None:
                 if self.logger:
-                    self.logger.debug(
-                        "Main file without overlay (expected for some memories): %s",
+                    self.logger.warning(
+                        "Main file without overlay: %s",
                         pair.main_path,
                     )
 

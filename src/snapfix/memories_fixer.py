@@ -1,8 +1,9 @@
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time
 from logging import Logger
 from pathlib import Path
+from shutil import copy2
 
 import ffmpeg
 from exiftool import ExifToolHelper
@@ -186,11 +187,15 @@ class MemoriesFixer:
         if self.logger:
             self.logger.info("Set filesystem dates on %s: %s", path, formatted)
 
-    def _print_summary(self, fixed: int, skipped: int, label: str = "Fixed") -> None:
+    def _print_summary(
+        self, fixed: int, skipped: int, copied: int, label: str = "Fixed"
+    ) -> None:
         if self.logger is None:
             return
         self.logger.info("")
-        self.logger.info("Done! %s %d files, skipped %d.", label, fixed, skipped)
+        self.logger.info(
+            "Done! %s %d files, skipped %d, copied %d", label, fixed, skipped, copied
+        )
 
     def fix_dates(self):
         et = self._ensure_started()
@@ -218,7 +223,7 @@ class MemoriesFixer:
             self._apply_dates(pair, target_datetime)
             fixed += 1
 
-        self._print_summary(fixed=fixed, skipped=skipped)
+        self._print_summary(fixed=fixed, skipped=skipped, copied=0)
 
     def _compose_pair(self, pair: MemoryPair, output_dir: Path) -> None:
         assert pair.main_path is not None and pair.overlay_path is not None
@@ -280,7 +285,9 @@ class MemoriesFixer:
         overlay_metadata = et.get_metadata(files=str(pair.overlay_path))[0]
 
         raw_width = metadata.get("ImageWidth") or metadata.get("Composite:ImageWidth")
-        raw_height = metadata.get("ImageHeight") or metadata.get("Composite:ImageHeight")
+        raw_height = metadata.get("ImageHeight") or metadata.get(
+            "Composite:ImageHeight"
+        )
         overlay_width = overlay_metadata.get("ImageWidth")
         overlay_height = overlay_metadata.get("ImageHeight")
 
@@ -296,8 +303,12 @@ class MemoriesFixer:
         if self.logger:
             self.logger.debug(
                 "raw=%sx%s overlay=%sx%s target=%sx%s",
-                raw_width, raw_height, overlay_width, overlay_height,
-                target_width, target_height,
+                raw_width,
+                raw_height,
+                overlay_width,
+                overlay_height,
+                target_width,
+                target_height,
             )
 
         video_input = ffmpeg.input(str(pair.main_path))
@@ -351,21 +362,75 @@ class MemoriesFixer:
                 "Created video composite %s with date %s", output_path, formatted
             )
 
-    def compose_all(self, output_dir: Path) -> None:
+    def _copy_and_date(
+        self, pair: MemoryPair, source_path: Path, output_dir: Path
+    ) -> None:
+        et = self._ensure_started()
+        metadata = et.get_metadata(files=str(source_path))[0]
+        target_datetime = self._determine_target_datetime(pair, metadata)
+
+        copied_dir = output_dir / "copied"
+        copied_dir.mkdir(parents=True, exist_ok=True)
+        destination = copied_dir / source_path.name
+
+        if self.dry_run:
+            if self.logger:
+                self.logger.info(
+                    "[DRY RUN] Would copy and date %s -> %s", source_path, destination
+                )
+            return
+
+        copy2(source_path, destination)
+
+        if self.logger:
+            self.logger.info("Copied and dated %s -> %s", source_path, destination)
+
+        if target_datetime is not None:
+            destination_pair = replace(pair, main_path=destination)
+            self._apply_dates(destination_pair, target_datetime)
+        elif self.logger:
+            self.logger.warning(
+                "Could not determine date for %s, copied without date fix", source_path
+            )
+
+    def compose_fix(self, output_dir: Path) -> None:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         composed = 0
         skipped = 0
+        copied = 0
 
         for pair in self.find_pairs():
-            if pair.main_path is None or pair.overlay_path is None:
+            # fixing dates for single items
+            if pair.main_path is None and pair.overlay_path:
+                self._copy_and_date(pair, pair.overlay_path, output_dir)
+                copied += 1
                 if self.logger:
-                    self.logger.debug(
-                        "Skipping compose (no overlay) for UUID %s", pair.uuid
+                    self.logger.warning(
+                        "No main path for UUID %s during compose fix", pair.uuid
+                    )
+                continue
+
+            if pair.main_path is None:
+                # type guard, shouldn't happen
+                if self.logger:
+                    self.logger.warning(
+                        "Empty pair (no main, no overlay) for UUID %s, skipping",
+                        pair.uuid,
                     )
                 skipped += 1
                 continue
 
+            if pair.overlay_path is None:
+                self._copy_and_date(pair, pair.main_path, output_dir)
+                copied += 1
+                if self.logger:
+                    self.logger.warning(
+                        "No overlay path for UUID %s during compose fix", pair.uuid
+                    )
+                continue
+
+            # composition for pairs
             suffix = pair.main_path.suffix.lower()
             if suffix == ".jpg":
                 self._compose_pair(pair, output_dir)
@@ -380,4 +445,6 @@ class MemoriesFixer:
                     )
                     skipped += 1
 
-        self._print_summary(fixed=composed, skipped=skipped, label="Composed")
+        self._print_summary(
+            fixed=composed, skipped=skipped, copied=copied, label="Composed and fixed"
+        )

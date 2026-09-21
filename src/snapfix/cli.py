@@ -30,7 +30,7 @@ def main():
         help="Leaves exiftool backup files (jpg_original) instead of editing file directly in place.",
     )
 
-    compose_parser = subparsers.add_parser("compose")
+    compose_parser = subparsers.add_parser("compose-fix-dates")
     compose_parser.add_argument(
         "root_dir",
         type=Path,
@@ -60,13 +60,13 @@ def main():
             keep_backups=args.keep_backups,
         ) as fixer:
             fixer.fix_dates()
-    elif args.command == "compose":
+    elif args.command == "compose-fix-dates":
         with MemoriesFixer(
             root_dir=args.root_dir,
             dry_run=args.dry_run,
             logger=lg,
         ) as fixer:
-            fixer.compose_all(args.output_dir)
+            fixer.compose_fix(args.output_dir)
 
 
 if __name__ == "__main__":

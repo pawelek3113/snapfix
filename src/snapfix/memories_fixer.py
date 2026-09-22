@@ -307,17 +307,6 @@ class MemoriesFixer:
         else:
             target_width, target_height = raw_width, raw_height
 
-        if self.logger:
-            self.logger.debug(
-                "raw=%sx%s overlay=%sx%s target=%sx%s",
-                raw_width,
-                raw_height,
-                overlay_width,
-                overlay_height,
-                target_width,
-                target_height,
-            )
-
         video_input = ffmpeg.input(str(pair.main_path))
         overlay_input = ffmpeg.input(str(pair.overlay_path))
 
@@ -432,7 +421,7 @@ class MemoriesFixer:
                 self._copy_and_date(pair, pair.main_path, output_dir)
                 copied += 1
                 if self.logger:
-                    self.logger.warning(
+                    self.logger.info(
                         "No overlay path for UUID %s during compose fix", pair.uuid
                     )
                 continue

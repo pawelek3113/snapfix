@@ -120,7 +120,7 @@ class MemoriesFixer:
     def _determine_target_datetime(
         self, pair: MemoryPair, metadata: dict
     ) -> datetime | None:
-        file_type = metadata.get("File:FileType")
+        file_type = metadata.get("FileType")
 
         if file_type == "MP4":
             return self._datetime_from_quicktime(metadata)
@@ -128,7 +128,7 @@ class MemoriesFixer:
         return self._datetime_from_filename(pair)
 
     def _datetime_from_quicktime(self, metadata: dict) -> datetime | None:
-        raw_value = metadata.get("QuickTime:CreateDate")
+        raw_value = metadata.get("CreateDate")
         if not raw_value:
             return None
         try:
@@ -286,12 +286,17 @@ class MemoriesFixer:
 
         overlay_metadata = et.get_metadata(files=str(pair.overlay_path))[0]
 
-        raw_width = metadata.get("ImageWidth") or metadata.get("Composite:ImageWidth")
-        raw_height = metadata.get("ImageHeight") or metadata.get(
-            "Composite:ImageHeight"
-        )
+        raw_width = metadata.get("ImageWidth")
+        raw_height = metadata.get("ImageHeight")
         overlay_width = overlay_metadata.get("ImageWidth")
         overlay_height = overlay_metadata.get("ImageHeight")
+
+        if raw_width is None or raw_height is None:
+            if self.logger:
+                self.logger.warning(
+                    "Missing raw dimensions for %s, skipping video compose", pair.main_path
+                )
+            return
 
         video_is_portrait_raw = raw_height > raw_width
         overlay_is_portrait = overlay_height > overlay_width

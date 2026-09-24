@@ -7,6 +7,7 @@ from shutil import copy2
 
 import ffmpeg
 from exiftool import ExifToolHelper
+from exiftool.exceptions import ExifToolExecuteError
 from PIL import Image, UnidentifiedImageError
 
 FILENAME_PATTERN = re.compile(
@@ -15,6 +16,18 @@ FILENAME_PATTERN = re.compile(
 )
 
 QUICKTIME_DATE_FORMAT = "%Y:%m:%d %H:%M:%S"
+
+from enum import Enum, auto
+
+
+class ComposeResult(Enum):
+    SUCCESS = auto()
+    OVERLAY_FAILED = (
+        auto()
+    )  # main file is fine, overlay is not — fall back to copy_and_date(main)
+    MAIN_FAILED = (
+        auto()
+    )  # main file itself is corrupt — fall back to copy_skipped(main)
 
 
 @dataclass
@@ -231,7 +244,17 @@ class MemoriesFixer:
         assert pair.main_path is not None and pair.overlay_path is not None
         et = self._ensure_started()
 
-        metadata = et.get_metadata(files=str(pair.main_path))[0]
+        try:
+            metadata = et.get_metadata(files=str(pair.main_path))[0]
+        except ExifToolExecuteError as e:
+            if self.logger:
+                self.logger.error(
+                    "Corrupt or unreadable main file for UUID %s: %s",
+                    pair.uuid,
+                    e,
+                )
+            return ComposeResult.MAIN_FAILED
+
         target_datetime = self._determine_target_datetime(pair, metadata)
         if target_datetime is None:
             if self.logger:
@@ -239,25 +262,23 @@ class MemoriesFixer:
                     "Could not determine date for composite, skipping UUID %s",
                     pair.uuid,
                 )
-            return False
+            return ComposeResult.OVERLAY_FAILED
 
         output_path = output_dir / f"{pair.main_path.stem}_composed.jpg"
 
         if self.dry_run:
             if self.logger:
                 self.logger.info("[DRY RUN] Would create composite %s", output_path)
-            return True
+            return ComposeResult.SUCCESS
 
         try:
             base = Image.open(pair.main_path).convert("RGBA")
             overlay = Image.open(pair.overlay_path).convert("RGBA")
         except UnidentifiedImageError as e:
             if self.logger:
-                self.logger.error(
-                    "Corrupt or unreadable image for UUID %s: %s", pair.uuid, e
-                )
-                return False
-        
+                self.logger.error("Corrupt overlay for UUID %s: %s", pair.uuid, e)
+                return ComposeResult.OVERLAY_FAILED
+
         if overlay.size != base.size:
             overlay = overlay.resize(base.size)
 
@@ -267,13 +288,24 @@ class MemoriesFixer:
         self._write_main_tags(
             output_path, target_datetime.strftime("%Y:%m:%d %H:%M:%S")
         )
-        return True
+        return ComposeResult.SUCCESS
 
-    def _compose_video_pair(self, pair: MemoryPair, output_dir: Path) -> None:
+    def _compose_video_pair(self, pair: MemoryPair, output_dir: Path) -> bool:
         assert pair.main_path is not None and pair.overlay_path is not None
 
         et = self._ensure_started()
-        metadata = et.get_metadata(files=str(pair.main_path))[0]
+
+        try:
+            metadata = et.get_metadata(files=str(pair.main_path))[0]
+        except ExifToolExecuteError as e:
+            if self.logger:
+                self.logger.error(
+                    "Corrupt or unreadable main file for UUID %s: %s",
+                    pair.uuid,
+                    e,
+                )
+            return ComposeResult.MAIN_FAILED
+
         target_datetime = self._determine_target_datetime(pair, metadata)
         if target_datetime is None:
             if self.logger:
@@ -281,7 +313,7 @@ class MemoriesFixer:
                     "Could not determine date for video composite, skipping UUID %s",
                     pair.uuid,
                 )
-            return
+            return ComposeResult.OVERLAY_FAILED
 
         output_path = output_dir / f"{pair.main_path.stem}_composed.mp4"
 
@@ -290,9 +322,18 @@ class MemoriesFixer:
                 self.logger.info(
                     "[DRY RUN] Would create video composite %s", output_path
                 )
-            return
+            return ComposeResult.SUCCESS
 
-        overlay_metadata = et.get_metadata(files=str(pair.overlay_path))[0]
+        try:
+            overlay_metadata = et.get_metadata(files=str(pair.overlay_path))[0]
+        except ExifToolExecuteError as e:
+            if self.logger:
+                self.logger.error(
+                    "Corrupt or unreadable overlay for UUID %s, falling back to main only %s",
+                    pair.uuid,
+                    e,
+                )
+            return ComposeResult.OVERLAY_FAILED
 
         raw_width = metadata.get("ImageWidth")
         raw_height = metadata.get("ImageHeight")
@@ -305,7 +346,7 @@ class MemoriesFixer:
                     "Missing raw dimensions for %s, skipping video compose",
                     pair.main_path,
                 )
-            return
+            return ComposeResult.OVERLAY_FAILED
 
         video_is_portrait_raw = raw_height > raw_width
         overlay_is_portrait = overlay_height > overlay_width
@@ -350,7 +391,7 @@ class MemoriesFixer:
                 self.logger.error(
                     "ffmpeg failed for %s: %s", pair.uuid, e.stderr.decode()
                 )
-            return
+            return ComposeResult.MAIN_FAILED
 
         formatted = target_datetime.strftime("%Y:%m:%d %H:%M:%S")
         et.set_tags(
@@ -366,6 +407,8 @@ class MemoriesFixer:
             self.logger.info(
                 "Created video composite %s with date %s", output_path, formatted
             )
+
+        return ComposeResult.SUCCESS
 
     def _copy_and_date(
         self, pair: MemoryPair, source_path: Path, output_dir: Path
@@ -396,6 +439,27 @@ class MemoriesFixer:
         elif self.logger:
             self.logger.warning(
                 "Could not determine date for %s, copied without date fix", source_path
+            )
+
+    def _copy_skipped(self, source_path: Path, output_dir: Path, reason: str) -> None:
+        skipped_dir = output_dir / "skipped"
+        skipped_dir.mkdir(parents=True, exist_ok=True)
+        destination = skipped_dir / source_path.name
+
+        if self.dry_run:
+            if self.logger:
+                self.logger.info(
+                    "[DRY RUN] Would copy skipped file %s -> %s (%s)",
+                    source_path,
+                    destination,
+                    reason,
+                )
+            return
+
+        copy2(source_path, destination)
+        if self.logger:
+            self.logger.warning(
+                "Copied skipped file %s -> %s (%s)", source_path, destination, reason
             )
 
     def compose_fix(self, output_dir: Path) -> None:
@@ -438,20 +502,23 @@ class MemoriesFixer:
             # composition for pairs
             suffix = pair.main_path.suffix.lower()
             if suffix == ".jpg":
-                if not self._compose_pair(pair, output_dir):
-                    self._copy_and_date(pair, pair.main_path, output_dir)
-                    copied += 1
-                else:
-                    composed += 1
+                result = self._compose_pair(pair, output_dir)
             elif suffix == ".mp4":
-                self._compose_video_pair(pair, output_dir)
-                composed += 1
+                result = self._compose_video_pair(pair, output_dir)
             else:
-                if self.logger:
-                    self.logger.warning(
-                        "Unrecognized main file type for compose: %s", pair.main_path
-                    )
-                    skipped += 1
+                result = None
+
+            if result == ComposeResult.SUCCESS:
+                composed += 1
+            elif result == ComposeResult.OVERLAY_FAILED:
+                self._copy_and_date(pair, pair.main_path, output_dir)
+                copied += 1
+            elif result == ComposeResult.MAIN_FAILED:
+                self._copy_skipped(pair.main_path, output_dir, "corrupt main file")
+                skipped += 1
+            elif result is None:
+                self._copy_skipped(pair.main_path, output_dir, "unrecognized file type")
+                skipped += 1
 
         self._print_summary(
             fixed=composed, skipped=skipped, copied=copied, label="Composed and fixed"

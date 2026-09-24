@@ -7,7 +7,7 @@ from shutil import copy2
 
 import ffmpeg
 from exiftool import ExifToolHelper
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 
 FILENAME_PATTERN = re.compile(
     r"^(?P<date>\d{4}-\d{2}-\d{2})_(?P<uuid>[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12})-(?P<kind>main|overlay)\.\w+$",
@@ -227,7 +227,7 @@ class MemoriesFixer:
 
         self._print_summary(fixed=fixed, skipped=skipped, copied=0)
 
-    def _compose_pair(self, pair: MemoryPair, output_dir: Path) -> None:
+    def _compose_pair(self, pair: MemoryPair, output_dir: Path) -> bool:
         assert pair.main_path is not None and pair.overlay_path is not None
         et = self._ensure_started()
 
@@ -239,18 +239,25 @@ class MemoriesFixer:
                     "Could not determine date for composite, skipping UUID %s",
                     pair.uuid,
                 )
-            return
+            return False
 
         output_path = output_dir / f"{pair.main_path.stem}_composed.jpg"
 
         if self.dry_run:
             if self.logger:
                 self.logger.info("[DRY RUN] Would create composite %s", output_path)
-            return
+            return True
 
-        base = Image.open(pair.main_path).convert("RGBA")
-        overlay = Image.open(pair.overlay_path).convert("RGBA")
-
+        try:
+            base = Image.open(pair.main_path).convert("RGBA")
+            overlay = Image.open(pair.overlay_path).convert("RGBA")
+        except UnidentifiedImageError as e:
+            if self.logger:
+                self.logger.error(
+                    "Corrupt or unreadable image for UUID %s: %s", pair.uuid, e
+                )
+                return False
+        
         if overlay.size != base.size:
             overlay = overlay.resize(base.size)
 
@@ -260,6 +267,7 @@ class MemoriesFixer:
         self._write_main_tags(
             output_path, target_datetime.strftime("%Y:%m:%d %H:%M:%S")
         )
+        return True
 
     def _compose_video_pair(self, pair: MemoryPair, output_dir: Path) -> None:
         assert pair.main_path is not None and pair.overlay_path is not None
@@ -294,7 +302,8 @@ class MemoriesFixer:
         if raw_width is None or raw_height is None:
             if self.logger:
                 self.logger.warning(
-                    "Missing raw dimensions for %s, skipping video compose", pair.main_path
+                    "Missing raw dimensions for %s, skipping video compose",
+                    pair.main_path,
                 )
             return
 
@@ -429,8 +438,11 @@ class MemoriesFixer:
             # composition for pairs
             suffix = pair.main_path.suffix.lower()
             if suffix == ".jpg":
-                self._compose_pair(pair, output_dir)
-                composed += 1
+                if not self._compose_pair(pair, output_dir):
+                    self._copy_and_date(pair, pair.main_path, output_dir)
+                    copied += 1
+                else:
+                    composed += 1
             elif suffix == ".mp4":
                 self._compose_video_pair(pair, output_dir)
                 composed += 1
